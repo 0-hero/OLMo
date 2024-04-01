@@ -1,106 +1,34 @@
-<div align="center">
-  <!-- <img src="https://github.com/allenai/OLMo/assets/8812459/774ac485-a535-4768-8f7c-db7be20f5cc3" width="300"/> -->
-  <img src="https://allenai.org/olmo/olmo-7b-animation.gif" alt="OLMo Logo" width="800" style="margin-left:'auto' margin-right:'auto' display:'block'"/>
-  <br>
-  <br>
-  <h1>OLMo: Open Language Model</h1>
-</div>
-<p align="center">
-  <a href="https://github.com/allenai/OLMo/blob/main/LICENSE">
-    <img alt="GitHub License" src="https://img.shields.io/github/license/allenai/OLMo">
-  </a>
-  <a href="https://github.com/allenai/OLMo/releases">
-    <img alt="GitHub release" src="https://img.shields.io/github/release/allenai/OLMo.svg">
-  </a>
-  <a href="https://arxiv.org/pdf/2402.00838.pdf">
-    <img alt="Paper URL" src="https://img.shields.io/badge/arxiv-2402.00838-blue">
-  </a>
-</p>
-
-OLMo is a repository for training and using AI2's state-of-the-art open language models. 
-It is built by scientists, for scientists.
+Fork of AI2 https://github.com/allenai/OLMo
 
 ## Installation
 
-First install [PyTorch](https://pytorch.org) according to the instructions specific to your operating system.
-
-To install from source (recommended for training/fine-tuning) run:
+You need PyTorch 2.1.2 to work nicely with MS-AMP
 
 ```bash
-git clone https://github.com/allenai/OLMo.git
+git clone https://github.com/thepowerfuldeez/OLMo.git
 cd OLMo
 pip install -e .[all]
+pip install flash-attn==2.3.3 --no-build-isolation
 ```
 
-Otherwise you can install the model code by itself directly from PyPI with:
+## Research log
 
-```bash
-pip install ai2-olmo
-```
+2024-04-01
+----------
+    
+Tokenized dolma sample dataset (300B tokens). Downloaded from dolma dataset https://huggingface.co/datasets/allenai/dolma, took every 10th line, then pip install dolma and
+    
+`dolma tokens --documents "/mnt/harddrive/datasets/text/dolma/*.gz" --tokenizer.name_or_path "allenai/OLMo-7B" --tokenizer.eos_token_id 50279 --tokenizer.pad_token_id 1 --destination /mnt/harddrive/datasets/text/preprocessed/olmo-mix/v1_6_subset/allenai_gpt-neox-olmo-dolma-v1_5/ --processes 16`
 
-## Models
+Latest torch didn’t work due to bugs with ms-amp <-> torch 2.2.2. Installed torch 2.1.2 and flash-attn 2.3.3
 
-### Overview
+RuntimeError: FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
+- Changed n_heads = 8 and d_model = 1536
 
-The core models in the OLMo family released so far are (all trained on the [Dolma dataset](https://huggingface.co/datasets/allenai/dolma)): 
-| Model | Training Tokens | Context Length | Training Config | W&B Logs | Data Order File(s) ☨ |
-|-------|-----------------|:--------------:|-----------------|----------|--------------------|
-| [OLMo 1B](https://huggingface.co/allenai/OLMo-1B) | 3 Trillion | 2048 | [configs/official/OLMo-1B.yaml](https://github.com/allenai/OLMo/blob/main/configs/official/OLMo-1B.yaml) | [wandb.ai/…/OLMo-1B](https://wandb.ai/ai2-llm/OLMo-1B/reports/OLMo-1B--Vmlldzo2NzY1Njk1) | [epoch 1](https://olmo-checkpoints.org/ai2-llm/olmo-small/46zc5fly/train_data/global_indices.npy) |
-| [OLMo 7B](https://huggingface.co/allenai/OLMo-7B) | 2.5 Trillion | 2048 | [configs/official/OLMo-7B.yaml](https://github.com/allenai/OLMo/blob/main/configs/official/OLMo-7B.yaml) | [wandb.ai/…/OLMo-7B](https://wandb.ai/ai2-llm/OLMo-7B/reports/OLMo-7B--Vmlldzo2NzQyMzk5) | [epoch 1](https://olmo-checkpoints.org/ai2-llm/olmo-medium/wvc30anm/train_data/global_indices.npy), [epoch 2](https://olmo-checkpoints.org/ai2-llm/olmo-medium/wd2gxrza/train_data/global_indices.npy) |
-| [OLMo 7B Twin 2T](https://huggingface.co/allenai/OLMo-7B-Twin-2T) | 2 Trillion  | 2048 | [configs/official/OLMo-7B.yaml](https://github.com/allenai/OLMo/blob/main/configs/official/OLMo-7B.yaml) | [wandb.ai/…/OLMo-7B-Twin-2T](https://wandb.ai/ai2-llm/OLMo-7B/reports/OLMo-7B-Twin-2T--Vmlldzo2NzU0NTIz) | [epoch 1](https://olmo-checkpoints.org/ai2-llm/olmo-medium/wvc30anm/train_data/global_indices.npy) |
+Model is 300M param with embeddings. Benchmarked speed without flash attn and with flash attn. flash-attn from separate library. Got 16k tps without flash-attn and 17k with it. 6.2% improvement.
 
-> ☨ *See [Inspecting training data](#inspecting-training-data) below for usage.*
+`git config --global --add safe.directory /hostroot/home/george/OLMo && export WANDB_API_KEY="" && torchrun --nproc_per_node=2 scripts/train.py configs/official/OLMo-250M.yaml --save_overwrite`
 
-### Checkpoints
-
-URLs to checkpoints at intermediate steps of the models' trainings can be found in the csv files under [`checkpoints/official/`](https://github.com/allenai/OLMo/blob/main/checkpoints/official). These 'directory' URLs cannot currently be directly accessed, but files within the directory are publicly accessible. These URLs can also be provided to the training script to resume training from the checkpoint (see [Training](#training)). Each checkpoint directory consists of:
-
-- `config.yaml`: the config at that training step.
-- `model.pt`, `optim.pt`, `train.pt`: model, optimizer and training state at that training step.
-
-## Inference
-
-You can utilize our Hugging Face integration to run inference on the olmo checkpoints:
-
-```python
-from hf_olmo import * # registers the Auto* classes
-
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-olmo = AutoModelForCausalLM.from_pretrained("allenai/OLMo-7B")
-tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-7B")
-
-message = ["Language modeling is "]
-inputs = tokenizer(message, return_tensors='pt', return_token_type_ids=False)
-response = olmo.generate(**inputs, max_new_tokens=100, do_sample=True, top_k=50, top_p=0.95)
-print(tokenizer.batch_decode(response, skip_special_tokens=True)[0])
-```
-
-Alternatively, with the Hugging Face pipeline abstraction:
-
-```python
-from transformers import pipeline
-olmo_pipe = pipeline("text-generation", model="allenai/OLMo-7B")
-print(olmo_pipe("Language modeling is"))
-```
-
-### Inference on finetuned checkpoints
-
-If you finetune the model using the code above, you can use the conversion script to convert a native OLMo checkpoint to a Hugging Face-compatible checkpoint
-
-```bash
-python hf_olmo/convert_olmo_to_hf.py --checkpoint-dir /path/to/checkpoint
-```
-
-### Quantization
-
-```python
-olmo = AutoModelForCausalLM.from_pretrained("allenai/OLMo-7B", torch_dtype=torch.float16, load_in_8bit=True)  # requires bitsandbytes
-```
-
-The quantized model is more sensitive to typing / cuda, so it is recommended to pass the inputs as inputs.input_ids.to('cuda') to avoid potential issues.
-
-## Reproducibility
 
 ### Training
 
