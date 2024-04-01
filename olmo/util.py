@@ -97,9 +97,9 @@ def setup_logging(log_filter_type: LogFilterType = LogFilterType.rank0_only) -> 
 
     handler: logging.Handler
     if (
-        os.environ.get("OLMo_NONINTERACTIVE", False)
-        or os.environ.get("DEBIAN_FRONTEND", None) == "noninteractive"
-        or not sys.stdout.isatty()
+            os.environ.get("OLMo_NONINTERACTIVE", False)
+            or os.environ.get("DEBIAN_FRONTEND", None) == "noninteractive"
+            or not sys.stdout.isatty()
     ):
         handler = logging.StreamHandler(sys.stdout)
         formatter = logging.Formatter(
@@ -216,11 +216,11 @@ class RichHandler(logging.Handler):
     """
 
     def __init__(
-        self,
-        *,
-        level: Union[int, str] = logging.NOTSET,
-        console: Optional[Console] = None,
-        markup: bool = False,
+            self,
+            *,
+            level: Union[int, str] = logging.NOTSET,
+            console: Optional[Console] = None,
+            markup: bool = False,
     ) -> None:
         super().__init__(level=level)
         self.console = console or rich.get_console()
@@ -307,7 +307,7 @@ def get_progress_bar() -> Progress:
 
 
 def resource_path(
-    folder: PathOrStr, fname: str, local_cache: Optional[PathOrStr] = None, progress: Optional[Progress] = None
+        folder: PathOrStr, fname: str, local_cache: Optional[PathOrStr] = None, progress: Optional[Progress] = None
 ) -> Path:
     if local_cache is not None and (local_path := Path(local_cache) / fname).is_file():
         log.info(f"Found local cache of {fname} at {local_path}")
@@ -492,11 +492,11 @@ def _get_s3_client(scheme: str):
 
 
 def _wait_before_retry(attempt: int):
-    time.sleep(min(0.5 * 2**attempt, 3.0))
+    time.sleep(min(0.5 * 2 ** attempt, 3.0))
 
 
 def _s3_upload(
-    source: Path, scheme: str, bucket_name: str, key: str, save_overwrite: bool = False, max_attempts: int = 3
+        source: Path, scheme: str, bucket_name: str, key: str, save_overwrite: bool = False, max_attempts: int = 3
 ):
     err: Optional[Exception] = None
     if not save_overwrite:
@@ -543,7 +543,7 @@ def _s3_file_size(scheme: str, bucket_name: str, key: str, max_attempts: int = 3
 
 
 def _s3_get_bytes_range(
-    scheme: str, bucket_name: str, key: str, bytes_start: int, num_bytes: int, max_attempts: int = 3
+        scheme: str, bucket_name: str, key: str, bytes_start: int, num_bytes: int, max_attempts: int = 3
 ) -> bytes:
     err: Optional[Exception] = None
     for attempt in range(1, max_attempts + 1):
@@ -621,11 +621,11 @@ def _http_get_bytes_range(scheme: str, host_name: str, path: str, bytes_start: i
     import requests
 
     response = requests.get(
-        f"{scheme}://{host_name}/{path}", headers={"Range": f"bytes={bytes_start}-{bytes_start+num_bytes-1}"}
+        f"{scheme}://{host_name}/{path}", headers={"Range": f"bytes={bytes_start}-{bytes_start + num_bytes - 1}"}
     )
     result = response.content
     assert (
-        len(result) == num_bytes
+            len(result) == num_bytes
     ), f"expected {num_bytes} bytes, got {len(result)}"  # Some web servers silently ignore range requests and send everything
     return result
 

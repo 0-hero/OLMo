@@ -31,6 +31,12 @@ from olmo.torch_util import (
 from olmo.train import Trainer
 from olmo.util import clean_opt, log_extra_field, prepare_cli_environment
 
+try:
+    from msamp.fsdp import FsdpReplacer
+    from msamp.fsdp import FP8FullyShardedDataParallel
+except ImportError:
+    print("Failed to import msamp. Please install msamp to use fp8.")
+
 log = logging.getLogger("train")
 
 
@@ -133,19 +139,32 @@ def main(cfg: TrainConfig) -> None:
         param_init_fn = dummy_init_fn
     else:
         param_init_fn = None
-    fsdp_model = FSDP(
-        olmo_model,
-        sharding_strategy=cfg.fsdp.sharding_strategy,
-        mixed_precision=cfg.fsdp_precision,
-        auto_wrap_policy=wrap_policy,
-        use_orig_params=cfg.fsdp.use_orig_params,  # needed for compile and some of our optimizer/parameter metrics
-        limit_all_gathers=True,
-        device_id=get_local_rank(),
-        param_init_fn=param_init_fn,
-    )
-    # when param_init_fn is None, FSDP will call reset_parameters() automatically
-    if param_init_fn is not None:
-        olmo_model.reset_parameters()
+
+    if cfg.use_msamp:
+        olmo_model = FsdpReplacer.replace(olmo_model)
+        fsdp_model = FP8FullyShardedDataParallel(
+            olmo_model,
+            sharding_strategy=cfg.fsdp.sharding_strategy,
+            auto_wrap_policy=wrap_policy,
+            use_orig_params=True,
+            limit_all_gathers=True,
+            device_id=get_local_rank(),
+            # param_init_fn=param_init_fn,
+        )
+    else:
+        fsdp_model = FSDP(
+            olmo_model,
+            sharding_strategy=cfg.fsdp.sharding_strategy,
+            mixed_precision=cfg.fsdp_precision,
+            auto_wrap_policy=wrap_policy,
+            use_orig_params=cfg.fsdp.use_orig_params,  # needed for compile and some of our optimizer/parameter metrics
+            limit_all_gathers=True,
+            device_id=get_local_rank(),
+            param_init_fn=param_init_fn,
+        )
+        # when param_init_fn is None, FSDP will call reset_parameters() automatically
+        if param_init_fn is not None:
+            olmo_model.reset_parameters()
 
     log.info(f"Peak GPU Memory (MB) after FSDP: {int(peak_gpu_memory() or 0)}")
     log.info("Model:")
@@ -166,16 +185,16 @@ def main(cfg: TrainConfig) -> None:
 
     # Consolidate components into `Trainer` object.
     with Trainer(
-        cfg=cfg,
-        epoch=cfg.epoch,
-        model=olmo_model,
-        fsdp_model=fsdp_model,
-        optim=optim,
-        scheduler=scheduler,
-        train_loader=train_loader,
-        device=device,
-        evaluators=evaluators,
-        indices_file=indices_file,
+            cfg=cfg,
+            epoch=cfg.epoch,
+            model=olmo_model,
+            fsdp_model=fsdp_model,
+            optim=optim,
+            scheduler=scheduler,
+            train_loader=train_loader,
+            device=device,
+            evaluators=evaluators,
+            indices_file=indices_file,
     ) as trainer:
         if not cfg.dry_run and not cfg.no_pre_train_checkpoint and cfg.load_path is None:
             checkpoint_type = (

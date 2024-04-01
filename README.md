@@ -29,6 +29,14 @@ Model is 300M param with embeddings. Benchmarked speed without flash attn and wi
 
 `git config --global --add safe.directory /hostroot/home/george/OLMo && export WANDB_API_KEY="" && torchrun --nproc_per_node=2 scripts/train.py configs/official/OLMo-250M.yaml --save_overwrite`
 
+Strangely after updating to torch 2.3 as part of nvcr.io official docker image and using flash-attn 2 that was included, performance degraded back to 16100 tps.
+
+Benchmarked torch.compile – 17900 tps
+
+Increased batch from 4 to 6 – 23000 tps
+
+Could'nt get fp8 up and running yet with MS-AMP, that's why switched to modern docker image.
+
 
 ### Training
 

@@ -36,15 +36,16 @@ model:
   init_device: meta
   init_fn: mitchell
 
-compile: null  # causes instability on AMD GPUs
+compile:
+  fullgraph: false
 
 optimizer:
   name: adamw
   learning_rate: 4.0e-4
   weight_decay: 0.1
   betas:
-  - 0.9
-  - 0.95
+    - 0.9
+    - 0.95
   metrics_log_interval: 10
 
 scheduler:
@@ -69,10 +70,11 @@ save_num_unsharded_checkpoints_to_keep: -1
 load_path: null
 
 max_duration: 739_328  # 3.1T tokens
-global_train_batch_size: 8
-device_train_microbatch_size: 4
+global_train_batch_size: 12
+device_train_microbatch_size: 6
 
 precision: amp_bf16
+use_msamp: false
 
 fsdp:
   wrapping_strategy: null
@@ -84,7 +86,7 @@ max_grad_norm_ratio: null
 speed_monitor:
   window_size: 20
 
-eval_interval: ${save_interval}
+eval_interval: 4000
 eval_subset_num_batches: -1
 device_eval_batch_size: ${device_train_microbatch_size}
 evaluators:
@@ -123,31 +125,31 @@ evaluators:
       drop_last: true
       datasets:
         v2-small-4chan-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/4chan/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/4chan/val.npy
         v2-small-c4_100_domains-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/c4_100_domains/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/c4_100_domains/val.npy
         v2-small-c4_en-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/c4_en/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/c4_en/val.npy
         v2-small-gab-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/gab/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/gab/val.npy
         v2-small-ice-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/ice/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/ice/val.npy
         v2-small-m2d2_s2orc-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/m2d2_s2orc/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/m2d2_s2orc/val.npy
         v2-small-m2d2_wiki-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/m2d2_wiki/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/m2d2_wiki/val.npy
         v2-small-manosphere-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/manosphere/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/manosphere/val.npy
         v2-small-mc4_en-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/mc4_en/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/mc4_en/val.npy
         v2-small-pile-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/pile/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/pile/val.npy
         v2-small-ptb-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/ptb/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/ptb/val.npy
         v2-small-twitterAEE-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/twitterAEE/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/twitterAEE/val.npy
         v2-small-wikitext_103-validation:
-        - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/wikitext_103/val.npy
+          - https://olmo-data.org/eval-data/perplexity/v2_small_gptneox20b/wikitext_103/val.npy
 
   - label: piqa
     type: downstream
@@ -161,7 +163,7 @@ evaluators:
   - label: openbook_qa
     type: downstream
 
-  # - label: boolq  # requires implemention of the pmi_dc matrix
+    # - label: boolq  # requires implemention of the pmi_dc matrix
     # type: downstream
 
   - label: sciq

@@ -119,11 +119,11 @@ class BaseConfig:
 
     @classmethod
     def load(
-        cls: Type[C],
-        path: PathOrStr,
-        overrides: Optional[List[str]] = None,
-        key: Optional[str] = None,
-        validate_paths: bool = True,
+            cls: Type[C],
+            path: PathOrStr,
+            overrides: Optional[List[str]] = None,
+            key: Optional[str] = None,
+            validate_paths: bool = True,
     ) -> C:
         """Load from a YAML file."""
         cls._register_resolvers(validate_paths=validate_paths)
@@ -458,6 +458,7 @@ class ModelConfig(BaseConfig):
 class OptimizerType(StrEnum):
     lionw = "lionw"
     adamw = "adamw"
+    fsdp_adamw = "fsdp_adamw"
 
 
 @dataclass
@@ -970,6 +971,11 @@ class TrainConfig(BaseConfig):
     precision: Optional[str] = None
     """
     Precision to train with (e.g. "amp_bf16", "amp_fp16", or "fp32").
+    """
+
+    use_msamp: bool = False
+    """
+    If ``True``, use fp8 training with MS-AMP
     """
 
     wandb: Optional[WandbConfig] = None
