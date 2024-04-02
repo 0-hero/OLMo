@@ -96,7 +96,7 @@ class LRMonitor:
 
 
 def cross_entropy_loss(
-    logits, labels, ignore_index: int = -100, reduction: str = "mean", compute_z_loss: bool = False
+        logits, labels, ignore_index: int = -100, reduction: str = "mean", compute_z_loss: bool = False
 ):
     loss = F.cross_entropy(logits, labels, ignore_index=ignore_index, reduction=reduction)
 
@@ -150,7 +150,7 @@ class Trainer:
             )
 
             def fused_loss_fn(
-                logits, labels, ignore_index: int = -100, reduction: str = "mean", compute_z_loss: bool = False
+                    logits, labels, ignore_index: int = -100, reduction: str = "mean", compute_z_loss: bool = False
             ):
                 loss, z_loss = cross_entropy_loss(
                     logits,
@@ -230,8 +230,8 @@ class Trainer:
     def max_tokens(self) -> int:
         if isinstance(self.cfg.max_duration, int):
             return (
-                self.global_train_tokens_seen
-                + max(self.cfg.max_duration - self.global_step, 0) * self.tokens_per_batch
+                    self.global_train_tokens_seen
+                    + max(self.cfg.max_duration - self.global_step, 0) * self.tokens_per_batch
             )
         elif isinstance(self.cfg.max_duration, str):
             if self.cfg.max_duration.endswith("T"):
@@ -243,8 +243,8 @@ class Trainer:
             else:
                 # convert to float *first* to handle scientific notation
                 return (
-                    self.global_train_tokens_seen
-                    + max(int(float(self.cfg.max_duration)) - self.global_step, 0) * self.tokens_per_batch
+                        self.global_train_tokens_seen
+                        + max(int(float(self.cfg.max_duration)) - self.global_step, 0) * self.tokens_per_batch
                 )
         else:
             raise TypeError(f"expected int or str for 'max_duration', found {type(self.cfg.max_duration)}")
@@ -335,7 +335,7 @@ class Trainer:
             # Technically we don't "see" these batches that we fast-forward through, but we use
             # this variable to update the position of the dataset so we need to include them here.
             self.global_train_examples_seen_this_epoch += (
-                self.cfg.fast_forward_batches * self.cfg.global_train_batch_size
+                    self.cfg.fast_forward_batches * self.cfg.global_train_batch_size
             )
             # NOTE: on the other hand we don't add anything to 'self.global_train_tokens_seen' here because
             # that variable is meant to track the actual number of tokens trained on.
@@ -375,7 +375,7 @@ class Trainer:
         torch.cuda.set_rng_state(rng_state["cuda"])
 
     def _save_checkpoint(
-        self, checkpointer: Checkpointer, checkpoint_type: CheckpointType
+            self, checkpointer: Checkpointer, checkpoint_type: CheckpointType
     ) -> Tuple[PathOrStr, Optional[PathOrStr]]:
         if checkpoint_type == CheckpointType.sharded:
             suffix = ""
@@ -477,13 +477,13 @@ class Trainer:
         self._remove_sharded_checkpoint(idx, self.ephemeral_checkpoints)
 
     def restore_sharded_checkpoint(
-        self,
-        load_path: PathOrStr,
-        local_cache: Optional[PathOrStr] = None,
-        *,
-        load_optimizer_state: bool = True,
-        load_trainer_state: bool = True,
-        sharded_checkpointer: Optional[ShardedCheckpointerType] = None,
+            self,
+            load_path: PathOrStr,
+            local_cache: Optional[PathOrStr] = None,
+            *,
+            load_optimizer_state: bool = True,
+            load_trainer_state: bool = True,
+            sharded_checkpointer: Optional[ShardedCheckpointerType] = None,
     ):
         # Zero-gradients to avoid gathering them.
         self.optim.zero_grad(set_to_none=True)
@@ -516,12 +516,12 @@ class Trainer:
         barrier()
 
     def restore_unsharded_checkpoint(
-        self,
-        load_path: PathOrStr,
-        local_cache: Optional[PathOrStr] = None,
-        *,
-        load_optimizer_state: bool = True,
-        load_trainer_state: bool = True,
+            self,
+            load_path: PathOrStr,
+            local_cache: Optional[PathOrStr] = None,
+            *,
+            load_optimizer_state: bool = True,
+            load_trainer_state: bool = True,
     ):
         # Zero-gradients to avoid gathering them.
         self.optim.zero_grad(set_to_none=True)
@@ -538,7 +538,7 @@ class Trainer:
         barrier()
 
     def save_checkpoint(
-        self, checkpoint_type: CheckpointType = CheckpointType.sharded
+            self, checkpoint_type: CheckpointType = CheckpointType.sharded
     ) -> Tuple[PathOrStr, Optional[PathOrStr]]:
         result: Tuple[PathOrStr, Optional[PathOrStr]]
         if checkpoint_type == CheckpointType.sharded:
@@ -554,17 +554,17 @@ class Trainer:
         return result
 
     def restore_checkpoint(
-        self,
-        load_path: PathOrStr,
-        *,
-        checkpoint_type: Optional[CheckpointType] = None,
-        local_cache: Optional[PathOrStr] = None,
-        load_optimizer_state: bool = True,
-        load_trainer_state: bool = True,
-        sharded_checkpointer: Optional[ShardedCheckpointerType] = None,
+            self,
+            load_path: PathOrStr,
+            *,
+            checkpoint_type: Optional[CheckpointType] = None,
+            local_cache: Optional[PathOrStr] = None,
+            load_optimizer_state: bool = True,
+            load_trainer_state: bool = True,
+            sharded_checkpointer: Optional[ShardedCheckpointerType] = None,
     ):
         if checkpoint_type == CheckpointType.unsharded or (
-            checkpoint_type is None and str(load_path).rstrip("/").endswith("-unsharded")
+                checkpoint_type is None and str(load_path).rstrip("/").endswith("-unsharded")
         ):
             self.restore_unsharded_checkpoint(
                 load_path,
@@ -609,7 +609,7 @@ class Trainer:
         return labels[..., 1:].contiguous()
 
     def model_forward(
-        self, batch: Dict[str, Any], loss_reduction: str = "mean", compute_z_loss: bool = False
+            self, batch: Dict[str, Any], loss_reduction: str = "mean", compute_z_loss: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         # shape: (batch_size, seq_len, vocab_size)
         logits = self.fsdp_model(
@@ -780,7 +780,7 @@ class Trainer:
                     micro_batches[key] = value.split(microbatch_size, dim=0)
                 elif isinstance(value, list):
                     micro_batches[key] = [
-                        value[microbatch_size * i : microbatch_size * i + microbatch_size]
+                        value[microbatch_size * i: microbatch_size * i + microbatch_size]
                         for i in range(math.ceil(batch_size / microbatch_size))
                     ]
                 else:
@@ -897,9 +897,9 @@ class Trainer:
                 cancel_reason = "time limit reached"
                 extra_steps = self.cfg.extra_steps_after_cancel
             elif (
-                self.cfg.early_stopping_factor is not None
-                and self.global_step > self.cfg.scheduler.t_warmup
-                and self.cur_train_loss > self.cfg.early_stopping_factor * self.min_train_loss
+                    self.cfg.early_stopping_factor is not None
+                    and self.global_step > self.cfg.scheduler.t_warmup
+                    and self.cur_train_loss > self.cfg.early_stopping_factor * self.min_train_loss
             ):
                 # Next check if early stopping loss criteria is met.
                 should_cancel = True
@@ -1069,9 +1069,9 @@ class Trainer:
 
                     # Log metrics to W&B.
                     if (
-                        wandb.run is not None
-                        and self.cfg.wandb is not None
-                        and self.global_step % self.cfg.wandb.log_interval == 0
+                            wandb.run is not None
+                            and self.cfg.wandb is not None
+                            and self.global_step % self.cfg.wandb.log_interval == 0
                     ):
                         wandb.log(metrics, step=self.global_step)
 
@@ -1087,11 +1087,11 @@ class Trainer:
 
                     # Maybe save sharded checkpoint.
                     if save_checkpoints and (
-                        cancel_initiated
-                        or (
-                            self.global_step % self.cfg.save_interval == 0
-                            and self.cfg.save_num_checkpoints_to_keep != 0
-                        )
+                            cancel_initiated
+                            or (
+                                    self.global_step % self.cfg.save_interval == 0
+                                    and self.cfg.save_num_checkpoints_to_keep != 0
+                            )
                     ):
                         log.info("Saving checkpoint...")
                         checkpoint_path, _ = self.save_checkpoint(CheckpointType.sharded)
@@ -1108,8 +1108,8 @@ class Trainer:
                         if cancel_initiated:
                             save_checkpoints = False
                     elif (
-                        self.cfg.save_interval_ephemeral is not None
-                        and self.global_step % self.cfg.save_interval_ephemeral == 0
+                            self.cfg.save_interval_ephemeral is not None
+                            and self.global_step % self.cfg.save_interval_ephemeral == 0
                     ):
                         log.info("Saving ephemeral checkpoint...")
                         checkpoint_path, _ = self.save_checkpoint(CheckpointType.sharded_ephemeral)
@@ -1120,10 +1120,10 @@ class Trainer:
 
                     # Maybe save unsharded checkpoint.
                     if (
-                        save_checkpoints
-                        and self.cfg.save_interval_unsharded is not None
-                        and self.global_step % self.cfg.save_interval_unsharded == 0
-                        and self.cfg.save_num_unsharded_checkpoints_to_keep != 0
+                            save_checkpoints
+                            and self.cfg.save_interval_unsharded is not None
+                            and self.global_step % self.cfg.save_interval_unsharded == 0
+                            and self.cfg.save_num_unsharded_checkpoints_to_keep != 0
                     ):
                         log.info("Saving unsharded checkpoint...")
                         checkpoint_path, _ = self.save_checkpoint(CheckpointType.unsharded)
@@ -1179,15 +1179,15 @@ class Trainer:
         # Save final checkpoint.
         if save_checkpoints:
             if (
-                self.cfg.save_interval_unsharded is not None
-                and self.last_unsharded_checkpoint_step != self.global_step
+                    self.cfg.save_interval_unsharded is not None
+                    and self.last_unsharded_checkpoint_step != self.global_step
             ):
                 log.info("Saving final unsharded model checkpoint...")
                 checkpoint_path, _ = self.save_checkpoint(CheckpointType.unsharded)
                 log.info(f"Unsharded checkpoint saved to {checkpoint_path}")
             elif (
-                self.cfg.save_num_checkpoints_to_keep != 0
-                and self.last_sharded_checkpoint_step != self.global_step
+                    self.cfg.save_num_checkpoints_to_keep != 0
+                    and self.last_sharded_checkpoint_step != self.global_step
             ):
                 log.info("Saving final checkpoint...")
                 checkpoint_path, _ = self.save_checkpoint(CheckpointType.sharded)

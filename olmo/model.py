@@ -53,11 +53,17 @@ elif sys.version_info.minor == 8:
 else:
     raise SystemExit("This script supports Python 3.8 or higher")
 
+try:
+    from flash_attn.layers.rotary import apply_rotary_emb
+except ImportError:
+    print("no flash-attn installed, failed to import rotary emb")
+
 __all__ = [
     "LayerNormBase",
     "LayerNorm",
     "RMSLayerNorm",
     "RotaryEmbedding",
+    "FlashRotaryEmbedding",
     "Activation",
     "GELU",
     "ReLU",
@@ -75,7 +81,7 @@ log = logging.getLogger(__name__)
 
 def activation_checkpoint_function(cfg: ModelConfig):
     preserve_rng_state = (
-        (cfg.attention_dropout == 0.0) and (cfg.embedding_dropout == 0.0) and (cfg.residual_dropout == 0.0)
+            (cfg.attention_dropout == 0.0) and (cfg.embedding_dropout == 0.0) and (cfg.residual_dropout == 0.0)
     )
     from torch.utils.checkpoint import checkpoint
 
@@ -90,12 +96,12 @@ def should_checkpoint_block(strategy: Optional[ActivationCheckpointingStrategy],
     if strategy is None:
         return False
     elif (
-        (strategy == ActivationCheckpointingStrategy.whole_layer)
-        or (strategy == ActivationCheckpointingStrategy.one_in_two and block_idx % 2 == 0)
-        or (strategy == ActivationCheckpointingStrategy.one_in_three and block_idx % 3 == 0)
-        or (strategy == ActivationCheckpointingStrategy.one_in_four and block_idx % 4 == 0)
-        or (strategy == ActivationCheckpointingStrategy.two_in_three and block_idx % 3 != 0)
-        or (strategy == ActivationCheckpointingStrategy.three_in_four and block_idx % 4 != 0)
+            (strategy == ActivationCheckpointingStrategy.whole_layer)
+            or (strategy == ActivationCheckpointingStrategy.one_in_two and block_idx % 2 == 0)
+            or (strategy == ActivationCheckpointingStrategy.one_in_three and block_idx % 3 == 0)
+            or (strategy == ActivationCheckpointingStrategy.one_in_four and block_idx % 4 == 0)
+            or (strategy == ActivationCheckpointingStrategy.two_in_three and block_idx % 3 != 0)
+            or (strategy == ActivationCheckpointingStrategy.three_in_four and block_idx % 4 != 0)
     ):
         return True
     else:
@@ -130,12 +136,12 @@ class Dropout(nn.Dropout):
 
 class LayerNormBase(nn.Module):
     def __init__(
-        self,
-        config: ModelConfig,
-        *,
-        size: Optional[int] = None,
-        elementwise_affine: Optional[bool] = True,
-        eps: float = 1e-05,
+            self,
+            config: ModelConfig,
+            *,
+            size: Optional[int] = None,
+            elementwise_affine: Optional[bool] = True,
+            eps: float = 1e-05,
     ):
         super().__init__()
         self.config = config
@@ -193,12 +199,12 @@ class LayerNorm(LayerNormBase):
     """
 
     def __init__(
-        self,
-        config: ModelConfig,
-        size: Optional[int] = None,
-        low_precision: bool = False,
-        elementwise_affine: Optional[bool] = None,
-        eps: float = 1e-05,
+            self,
+            config: ModelConfig,
+            size: Optional[int] = None,
+            low_precision: bool = False,
+            elementwise_affine: Optional[bool] = None,
+            eps: float = 1e-05,
     ):
         super().__init__(config, size=size, elementwise_affine=elementwise_affine, eps=eps)
         self.low_precision = low_precision
@@ -225,11 +231,11 @@ class RMSLayerNorm(LayerNormBase):
     """
 
     def __init__(
-        self,
-        config: ModelConfig,
-        size: Optional[int] = None,
-        elementwise_affine: Optional[bool] = None,
-        eps: float = 1e-5,
+            self,
+            config: ModelConfig,
+            size: Optional[int] = None,
+            elementwise_affine: Optional[bool] = None,
+            eps: float = 1e-5,
     ):
         super().__init__(config, size=size, elementwise_affine=elementwise_affine, eps=eps)
 
@@ -250,6 +256,79 @@ class RMSLayerNorm(LayerNormBase):
             return x
 
 
+class FlashRotaryEmbedding(torch.nn.Module):
+    def __init__(self, config: ModelConfig, cache: BufferCache):
+        super().__init__()
+        self.config = config
+        self.__cache = cache
+        # Warm up cache.
+        self.get_rotary_embedding(config.max_sequence_length, _non_meta_init_device(config))
+
+    def _compute_inv_freq(self, dim, device=None):
+        return 1.0 / (
+                10000.0
+                ** (torch.arange(0, dim, 2, device=device, dtype=torch.float32) / dim)
+        )
+
+    def get_rotary_embedding(self, seq_len: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        if (
+                (pos_sin := self.__cache.get("rope_pos_sin")) is not None
+                and (pos_cos := self.__cache.get("rope_pos_cos")) is not None
+                and pos_sin.shape[-2] >= seq_len
+                and pos_cos.shape[-2] >= seq_len
+        ):
+            if pos_sin.device != device:
+                pos_sin = pos_sin.to(device)
+                self.__cache["rope_pos_sin"] = pos_sin
+            if pos_cos.device != device:
+                pos_cos = pos_cos.to(device)
+                self.__cache["rope_pos_cos"] = pos_cos
+            return pos_sin[:, :, :seq_len, :], pos_cos[:, :, :seq_len, :]
+
+        with torch.autocast(device.type, enabled=False):
+            head_dim = self.config.d_model // self.config.n_heads
+            inv_freq = self._compute_inv_freq(head_dim, device=device)
+            seq = torch.arange(seq_len, device=device, dtype=torch.float32)
+            # freqs = einsum("i , j -> i j", seq, inv_freq)
+            freqs = torch.outer(seq, inv_freq)
+
+            # positions = torch.cat((freqs, freqs), dim=-1)
+            # don't cat, triton kernel will multiply head dim by 2 automatically
+            positions = freqs
+
+            pos_sin, pos_cos = torch.sin(positions)[None, None, :, :], torch.cos(positions)[None, None, :, :]
+        self.__cache["rope_pos_sin"] = pos_sin
+        self.__cache["rope_pos_cos"] = pos_cos
+        return pos_sin, pos_cos
+
+    @torch.compiler.disable
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.config.rope_full_precision:
+            q_, k_ = q.float(), k.float()
+        else:
+            q_, k_ = q, k
+        # (nh, bs, seq_len, head_dim)
+
+        with torch.autocast(q.device.type, enabled=False):
+            query_len, key_len = q_.shape[-2], k_.shape[-2]  # could be different if layer_past not None
+            pos_sin, pos_cos = self.get_rotary_embedding(key_len, q_.device)
+            pos_sin = pos_sin.type_as(q_)
+            pos_cos = pos_cos.type_as(q_)
+
+            # triton kernel expects (bs, seq_len, nh, head_dim)
+            q_ = q_.permute(1, 2, 0, 3)
+            k_ = k_.permute(1, 2, 0, 3)
+            q_ = apply_rotary_emb(
+                q_,
+                pos_sin[0, 0, key_len - query_len : key_len, :],
+                pos_cos[0, 0, key_len - query_len : key_len, :],
+                inplace=True
+            )
+            k_ = apply_rotary_emb(k_, pos_sin[0, 0, :, :], pos_cos[0, 0, :, :], inplace=True)
+            q_ = q_.permute(2, 0, 1, 3)
+            k_ = k_.permute(2, 0, 1, 3)
+        return q_.type_as(q), k_.type_as(k)
+
 class RotaryEmbedding(nn.Module):
     """
     [Rotary positional embeddings (RoPE)](https://arxiv.org/abs/2104.09864).
@@ -264,10 +343,10 @@ class RotaryEmbedding(nn.Module):
 
     def get_rotary_embedding(self, seq_len: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         if (
-            (pos_sin := self.__cache.get("rope_pos_sin")) is not None
-            and (pos_cos := self.__cache.get("rope_pos_cos")) is not None
-            and pos_sin.shape[-2] >= seq_len
-            and pos_cos.shape[-2] >= seq_len
+                (pos_sin := self.__cache.get("rope_pos_sin")) is not None
+                and (pos_cos := self.__cache.get("rope_pos_cos")) is not None
+                and pos_sin.shape[-2] >= seq_len
+                and pos_cos.shape[-2] >= seq_len
         ):
             if pos_sin.device != device:
                 pos_sin = pos_sin.to(device)
@@ -457,7 +536,8 @@ class OLMoBlock(nn.Module):
 
         # Rotary embeddings.
         if self.config.rope:
-            self.rotary_emb = RotaryEmbedding(config, self.__cache)
+            # self.rotary_emb = RotaryEmbedding(config, self.__cache)
+            self.rotary_emb = FlashRotaryEmbedding(config, self.__cache)
 
         self.flash_attn_func = None
         if config.flash_attention:
@@ -510,13 +590,13 @@ class OLMoBlock(nn.Module):
         return bias
 
     def _scaled_dot_product_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-        dropout_p: float = 0.0,
-        is_causal: bool = False,
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            attn_mask: Optional[torch.Tensor] = None,
+            dropout_p: float = 0.0,
+            is_causal: bool = False,
     ) -> torch.Tensor:
         """
         Computes scaled dot product attention on query, key and value tensors, using an optional
@@ -547,13 +627,13 @@ class OLMoBlock(nn.Module):
             )
 
     def attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        attention_bias: Optional[torch.Tensor] = None,
-        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        use_cache: bool = False,
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            attention_bias: Optional[torch.Tensor] = None,
+            layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+            use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         B, T, C = q.size()  # batch size, sequence length, d_model
         dtype = k.dtype
@@ -612,11 +692,11 @@ class OLMoBlock(nn.Module):
 
     @abstractmethod
     def forward(
-        self,
-        x: torch.Tensor,
-        attention_bias: Optional[torch.FloatTensor] = None,
-        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        use_cache: bool = False,
+            self,
+            x: torch.Tensor,
+            attention_bias: Optional[torch.FloatTensor] = None,
+            layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+            use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         raise NotImplementedError
 
@@ -670,11 +750,11 @@ class OLMoSequentialBlock(OLMoBlock):
         )
 
     def forward(
-        self,
-        x: torch.Tensor,
-        attention_bias: Optional[torch.Tensor] = None,
-        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        use_cache: bool = False,
+            self,
+            x: torch.Tensor,
+            attention_bias: Optional[torch.Tensor] = None,
+            layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+            use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Get query, key, value projections.
         # shape:
@@ -774,13 +854,13 @@ class OLMoLlamaBlock(OLMoBlock):
         init_weights(self.config, self.ff_proj, d=self.config.d_model, layer_id=None)
 
     def _scaled_dot_product_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-        dropout_p: float = 0.0,
-        is_causal: bool = False,
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            attn_mask: Optional[torch.Tensor] = None,
+            dropout_p: float = 0.0,
+            is_causal: bool = False,
     ) -> torch.Tensor:
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
 
@@ -800,11 +880,11 @@ class OLMoLlamaBlock(OLMoBlock):
         return torch.matmul(attn_weights, v)
 
     def forward(
-        self,
-        x: torch.Tensor,
-        attention_bias: Optional[torch.Tensor] = None,
-        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        use_cache: bool = False,
+            self,
+            x: torch.Tensor,
+            attention_bias: Optional[torch.Tensor] = None,
+            layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+            use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Get query, key, value projections.
         # shape:
@@ -887,11 +967,11 @@ class OLMoBlockGroup(nn.ModuleList):
         self._activation_checkpoint_fn = activation_checkpoint_function(self.config)
 
     def forward(
-        self,
-        x: torch.Tensor,
-        attention_bias: Optional[torch.FloatTensor] = None,
-        layers_past: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
-        use_cache: bool = False,
+            self,
+            x: torch.Tensor,
+            attention_bias: Optional[torch.FloatTensor] = None,
+            layers_past: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
+            use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]:
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
         for block_idx, block in enumerate(self):
@@ -947,8 +1027,8 @@ class OLMo(nn.Module):
         self._activation_checkpoint_fn: Callable = activation_checkpoint_function(self.config)
 
         if not (
-            0 < self.config.block_group_size <= self.config.n_layers
-            and self.config.n_layers % self.config.block_group_size == 0
+                0 < self.config.block_group_size <= self.config.n_layers
+                and self.config.n_layers % self.config.block_group_size == 0
         ):
             raise OLMoConfigurationError("n layers must be divisible by block group size")
 
@@ -987,7 +1067,7 @@ class OLMo(nn.Module):
                         config.embedding_size or config.vocab_size,
                         bias=config.include_bias,
                         device=config.init_device,
-                    )
+                        )
                 }
             )
         # When `init_device="meta"` FSDP will call `reset_parameters()` to initialize weights.
@@ -1058,15 +1138,15 @@ class OLMo(nn.Module):
         return alibi_bias
 
     def forward(
-        self,
-        input_ids: torch.LongTensor,
-        input_embeddings: Optional[torch.FloatTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        attention_bias: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
-        use_cache: bool = False,
-        last_logits_only: bool = False,
-        output_hidden_states: Optional[bool] = None,
+            self,
+            input_ids: torch.LongTensor,
+            input_embeddings: Optional[torch.FloatTensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            attention_bias: Optional[torch.Tensor] = None,
+            past_key_values: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
+            use_cache: bool = False,
+            last_logits_only: bool = False,
+            output_hidden_states: Optional[bool] = None,
     ) -> OLMoOutput:
         """
         :param input_ids: A tensor of shape `(batch_size, seq_len)`.
@@ -1133,13 +1213,13 @@ class OLMo(nn.Module):
 
         # Merge attention mask with attention bias.
         if (
-            attention_bias is not None
-            or attention_mask is not None
-            or self.config.alibi
-            # NOTE (epwalsh): we need to initialize the attn bias in order for attn to work properly
-            # with key+value cache. Otherwise `F.scaled_dot_product_attention()` doesn't seem to compute
-            # scores correctly.
-            or past_key_values is not None
+                attention_bias is not None
+                or attention_mask is not None
+                or self.config.alibi
+                # NOTE (epwalsh): we need to initialize the attn bias in order for attn to work properly
+                # with key+value cache. Otherwise `F.scaled_dot_product_attention()` doesn't seem to compute
+                # scores correctly.
+                or past_key_values is not None
         ):
             if attention_bias is None and self.config.alibi:
                 attention_bias = get_causal_attention_bias(
@@ -1202,8 +1282,8 @@ class OLMo(nn.Module):
                     None
                     if past_key_values is None
                     else past_key_values[
-                        group_idx * self.config.block_group_size : (group_idx + 1) * self.config.block_group_size
-                    ]
+                         group_idx * self.config.block_group_size : (group_idx + 1) * self.config.block_group_size
+                         ]
                 )
                 x, cache = block_group(
                     x, attention_bias=attention_bias, layers_past=layers_past, use_cache=use_cache
@@ -1353,23 +1433,23 @@ class OLMo(nn.Module):
         params_flops_per_seq = params_flops_per_token * self.config.max_sequence_length
         # there are 2 FLOPS per mac; there is A=Q*K^T and out=A*V ops (ie mult by 2)
         attn_flops_per_seq = (
-            self.config.n_layers * 2 * 2 * (self.config.d_model * (self.config.max_sequence_length**2))
+                self.config.n_layers * 2 * 2 * (self.config.d_model * (self.config.max_sequence_length**2))
         )
         self.__num_fwd_flops = params_flops_per_seq + attn_flops_per_seq
         return self.__num_fwd_flops
 
     def generate(
-        self,
-        input_ids: torch.LongTensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        attention_bias: Optional[torch.Tensor] = None,
-        max_steps: int = 10,
-        beam_size: int = 1,
-        per_node_beam_size: Optional[int] = None,
-        sampler: Optional[Sampler] = None,
-        min_steps: Optional[int] = None,
-        final_sequence_scorer: Optional[FinalSequenceScorer] = None,
-        constraints: Optional[List[Constraint]] = None,
+            self,
+            input_ids: torch.LongTensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            attention_bias: Optional[torch.Tensor] = None,
+            max_steps: int = 10,
+            beam_size: int = 1,
+            per_node_beam_size: Optional[int] = None,
+            sampler: Optional[Sampler] = None,
+            min_steps: Optional[int] = None,
+            final_sequence_scorer: Optional[FinalSequenceScorer] = None,
+            constraints: Optional[List[Constraint]] = None,
     ) -> OLMoGenerateOutput:
         """
         Generate token IDs using beam search.
@@ -1404,16 +1484,16 @@ class OLMo(nn.Module):
             assert len(attention_bias.shape) == 4
             assert attention_bias.shape[:2] == (batch_size, 1)
             assert (
-                seq_len + beam_search.max_steps
-                <= attention_bias.shape[2]
-                == attention_bias.shape[3]
-                <= self.config.max_sequence_length
+                    seq_len + beam_search.max_steps
+                    <= attention_bias.shape[2]
+                    == attention_bias.shape[3]
+                    <= self.config.max_sequence_length
             )
 
         tokens_generated = 0
 
         def flatten_past_key_values(
-            past_key_values: List[Tuple[torch.Tensor, torch.Tensor]],
+                past_key_values: List[Tuple[torch.Tensor, torch.Tensor]],
         ) -> Dict[str, torch.Tensor]:
             out = {}
             for i, (key, value) in enumerate(past_key_values):
@@ -1422,7 +1502,7 @@ class OLMo(nn.Module):
             return out
 
         def unflatten_past_key_values(
-            past_key_values: Dict[str, torch.Tensor],
+                past_key_values: Dict[str, torch.Tensor],
         ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
             out = []
             for i in range(self.config.n_layers):
@@ -1432,7 +1512,7 @@ class OLMo(nn.Module):
             return out
 
         def step(
-            last_predictions: torch.Tensor, state: dict[str, torch.Tensor]
+                last_predictions: torch.Tensor, state: dict[str, torch.Tensor]
         ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
             nonlocal tokens_generated
 
@@ -1487,7 +1567,7 @@ class OLMo(nn.Module):
 
     @classmethod
     def from_checkpoint(
-        cls, checkpoint_dir: PathOrStr, device: str = "cpu", checkpoint_type: Optional[CheckpointType] = None
+            cls, checkpoint_dir: PathOrStr, device: str = "cpu", checkpoint_type: Optional[CheckpointType] = None
     ) -> OLMo:
         """
         Load an OLMo model from a checkpoint.
@@ -1532,7 +1612,7 @@ class OLMo(nn.Module):
         return model.eval()
 
     def _make_state_dict_compatible(
-        self, state_dict: Dict[str, torch.Tensor]
+            self, state_dict: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Set[str]]]:
         """
         Handles some cases where the state dict is valid yet may need to be transformed in order to

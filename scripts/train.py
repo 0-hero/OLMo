@@ -37,6 +37,7 @@ try:
 except ImportError:
     print("Failed to import msamp. Please install msamp to use fp8.")
 
+
 log = logging.getLogger("train")
 
 
