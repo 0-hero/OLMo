@@ -13,6 +13,28 @@ pip install flash-attn==2.3.3 --no-build-isolation
 
 ## Research log
 
+2024-04-03
+----------
+
+Experimenting with GaLore approach. Main benefits:
+1. Low-rank approximation of gradients
+2. 8bit AdamW support
+3. Layer-wise updates from LOMO paper
+ 
+Unfortunately it doesn't work with FDSP and layer-wise support implementation is cumbersome. However, 
+I have tried to use bitsandbytes adamw optimizer and got 11% tps improvement: 32300 tps, but I couldn't resume my old state, so I continue to pre-train with old settings and wait until GaLore would fix all issues and try again. This would probably enable batch_size 8 –> 12 per gpu.
+
+2024-04-02
+----------
+
+Tried to add flash-attn RoPE support using triton kernel. During the development discovered several things:
+1. flash-attn==2.5.6 doesn't work with torch==2.3.0a0+40ec155e58.nv24.3 nightly. It throws an error that q,k,v are not fp16 or bf16 however they are.
+2. RoPE triton kernel is not compatible with torch.compile. I got along with it by using torch.compiler.disable decorator.
+
+Re-compiling flash-attn and addition of rope kernel results in 24300 tps, which is another 5% improvement.
+
+Increased batch size even further to 8 and got 29000 tps.
+
 2024-04-01
 ----------
     

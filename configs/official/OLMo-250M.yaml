@@ -69,9 +69,9 @@ save_num_unsharded_checkpoints_to_keep: -1
 
 load_path: null
 
-max_duration: 739_328  # 3.1T tokens
-global_train_batch_size: 12
-device_train_microbatch_size: 6
+max_duration: 7_393_280  # 3.1T tokens
+global_train_batch_size: 16
+device_train_microbatch_size: 8
 
 precision: amp_bf16
 use_msamp: false
@@ -195,7 +195,7 @@ data:
   num_workers: 0
   drop_last: true
   pin_memory: true
-  prefetch_factor: 16
+  prefetch_factor: 32
   persistent_workers: true
   timeout: 0
   paths: ${path.glob:/mnt/harddrive/datasets/text/preprocessed/olmo-mix/v1_6_subset/allenai_gpt-neox-olmo-dolma-v1_5/*.npy}
