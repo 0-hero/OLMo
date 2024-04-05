@@ -20,6 +20,8 @@ Approach with MoE didn't show good results, due to reduced d_model.
 I have implemented Mixture-of-Depths approach and use that with 12.5% sparsity and every 2 block. It allowed me to reduce memory costs and increase speed of training by 10%. 
 I have 35k tps now and even increased number of layers to 8.
 
+UPD: Seems that the approach is working and loss is on par with non-optimized version. I just see avg_metrics are 1% short of baseline. Trying to multiply outputs by gated weights (sigmoid applied), maybe it would improve convergence.
+
 
 2024-04-04
 ----------

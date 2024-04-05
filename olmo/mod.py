@@ -64,12 +64,15 @@ class MoD(nn.Module):
         top_k_tokens = torch.gather(x, 1, indices_expanded)
         top_k_tokens_processed, cache = self.block(top_k_tokens, **kwargs)
 
+        # apply sigmoid before multiplying signal
+        weights_gated = torch.nn.functional.sigmoid(weights)
+
         """STEP 3: combine results"""
         x = torch.scatter_add(
             x,
             dim=1,
             index=indices_expanded,
-            src=top_k_tokens_processed * weights,
+            src=top_k_tokens_processed * weights_gated,
         )
 
         return x, cache, aux_loss
