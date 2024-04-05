@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from .config import InitFnType, ModelConfig
 from .util import StrEnum
+from .moe import MoE
 
 __all__ = ["init_weights", "ModuleType"]
 
@@ -18,12 +19,12 @@ class ModuleType(StrEnum):
 
 
 def init_weights(
-    config: ModelConfig,
-    module: Union[nn.Linear, nn.Embedding],
-    d: Optional[int] = None,
-    layer_id: Optional[int] = None,
-    std_factor: float = 1.0,
-    type_of_module: Optional[ModuleType] = None,
+        config: ModelConfig,
+        module: Union[nn.Linear, nn.Embedding],
+        d: Optional[int] = None,
+        layer_id: Optional[int] = None,
+        std_factor: float = 1.0,
+        type_of_module: Optional[ModuleType] = None,
 ) -> None:
     """
     Initialize weights of a linear or embedding module.
@@ -35,6 +36,11 @@ def init_weights(
     :param layer_id: When set, the standard deviation for the "mitchell" method will be adjusted by
         ``1 / sqrt(2 * (layer_id + 1))``.
     """
+    # moe experts are already initialized
+    if isinstance(module, MoE):
+        return
+
+
     d = d if d is not None else config.d_model
     if config.init_fn == InitFnType.normal:
         std = config.init_std * std_factor

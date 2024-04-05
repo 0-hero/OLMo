@@ -433,6 +433,10 @@ class ModelConfig(BaseConfig):
     See :data:`TrainConfig.precision` instead.
     """
 
+    use_moe: Optional[bool] = False
+    moe_num_experts: Optional[int] = 6
+    moe_top_k: Optional[int] = 2
+
     @property
     def effective_n_kv_heads(self) -> int:
         if self.n_kv_heads is None:
@@ -458,7 +462,7 @@ class ModelConfig(BaseConfig):
 class OptimizerType(StrEnum):
     lionw = "lionw"
     adamw = "adamw"
-    fsdp_adamw = "fsdp_adamw"
+    galore = "galore"
 
 
 @dataclass

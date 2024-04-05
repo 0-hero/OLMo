@@ -612,11 +612,19 @@ class Trainer:
             self, batch: Dict[str, Any], loss_reduction: str = "mean", compute_z_loss: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         # shape: (batch_size, seq_len, vocab_size)
-        logits = self.fsdp_model(
+        outputs = self.fsdp_model(
             input_ids=batch["input_ids"],
             attention_mask=batch.get("attention_mask"),
             attention_bias=batch.get("attention_bias"),
-        ).logits
+        )
+
+        logits = outputs.logits
+        aux_loss = getattr(outputs, "aux_loss")
+        try:
+            if aux_loss is not None and torch.isnan(aux_loss):
+                aux_loss = torch.tensor(0.0)
+        except:
+            aux_loss = torch.tensor(0.0)
         logits_for_loss = logits[..., :-1, :].contiguous()
         # shape: (batch_size * seq_len, vocab_size)
         logits_for_loss = logits_for_loss.view(-1, logits_for_loss.size(-1))
@@ -632,7 +640,7 @@ class Trainer:
             ce_loss = ce_loss.view(batch["input_ids"].shape[0], -1)
             if z_loss is not None:
                 z_loss = z_loss.view(batch["input_ids"].shape[0], -1)
-        return ce_loss, z_loss, logits
+        return ce_loss, z_loss, aux_loss, logits
 
     def train_batch(self, batch: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # Split into micro-batches.
@@ -642,14 +650,18 @@ class Trainer:
         del batch
 
         ce_batch_loss = torch.tensor(0.0, device=self.device)
+        aux_batch_loss = torch.tensor(0.0, device=self.device)
         z_batch_loss = None if not self.cfg.softmax_auxiliary_loss else torch.tensor(0.0, device=self.device)
         for micro_batch in micro_batches:
             with torch.autocast("cuda", enabled=True, dtype=self.cfg.autocast_precision):
                 # Run forward pass.
-                ce_loss, z_loss, logits = self.model_forward(
+                ce_loss, z_loss, aux_loss, logits = self.model_forward(
                     micro_batch, compute_z_loss=self.cfg.softmax_auxiliary_loss
                 )
                 ce_loss = ce_loss / len(micro_batches)
+                if aux_loss is not None:
+                    aux_loss = aux_loss / len(micro_batches)
+                    aux_batch_loss += aux_loss.detach()
 
                 # In case this helps with memory utilization.
                 del micro_batch
@@ -662,19 +674,19 @@ class Trainer:
                     assert z_loss is not None
                     assert z_batch_loss is not None
                     z_loss = z_loss / len(micro_batches)
-                    loss = ce_loss + z_loss
+                    loss = ce_loss + z_loss + aux_loss
 
                     # Update overall Z batch loss.
                     z_batch_loss += z_loss.detach()
                 else:
-                    loss = ce_loss
+                    loss = ce_loss + aux_loss
 
                 del logits
 
             # Run backward pass.
             loss.backward()
 
-        return ce_batch_loss, z_batch_loss
+        return ce_batch_loss, z_batch_loss, aux_batch_loss
 
     def train_step(self, batch: Dict[str, Any], reduce_global_loss: bool = True) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
@@ -691,12 +703,15 @@ class Trainer:
         batch = move_to_device(batch, self.device)
 
         # Run forward-backward pass.
-        ce_batch_loss, z_batch_loss = self.train_batch(batch)
+        ce_batch_loss, z_batch_loss, aux_batch_loss = self.train_batch(batch)
 
         # Collect loss, potentially reducing over all ranks.
         if reduce_global_loss:
             dist.reduce(ce_batch_loss, 0)
             ce_batch_loss.div_(get_world_size())
+
+            dist.reduce(aux_batch_loss, 0)
+            aux_batch_loss.div_(get_world_size())
             if z_batch_loss is not None:
                 dist.reduce(z_batch_loss, 0)
                 z_batch_loss.div_(get_world_size())
@@ -734,8 +749,10 @@ class Trainer:
         for key, value in optim_metrics.items():
             metrics[f"optim/{key}"] = value.item()
         self.cur_train_loss = ce_batch_loss.item()
+        self.cur_aux_loss = aux_batch_loss.item()
         self.min_train_loss = min(self.min_train_loss, self.cur_train_loss)
         metrics["train/CrossEntropyLoss"] = self.cur_train_loss
+        metrics["train/aux_loss"] = self.cur_aux_loss
         metrics["train/Perplexity"] = math.exp(self.cur_train_loss)
         if z_batch_loss is not None:
             metrics["train/ZLoss"] = z_batch_loss.item()
@@ -750,7 +767,7 @@ class Trainer:
 
     def eval_batch(self, batch: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.autocast("cuda", enabled=True, dtype=self.cfg.autocast_precision):
-            ce_loss, _, logits = self.model_forward(batch, loss_reduction="none")
+            ce_loss, _, _, logits = self.model_forward(batch, loss_reduction="none")
         return ce_loss.mean(dim=-1), logits
 
     def eval_step(self, batch: Dict[str, Any], evaluator: Evaluator) -> None:
@@ -800,18 +817,21 @@ class Trainer:
 
     def log_metrics_to_console(self, prefix: str, metrics: Dict[str, float]):
         def format_float(value: float) -> str:
-            if value < 0.0001:
-                return str(value)  # scientific notation
-            elif value > 1000:
-                return f"{int(value):,d}"
-            elif value > 100:
-                return f"{value:.1f}"
-            elif value > 10:
-                return f"{value:.2f}"
-            elif value > 1:
-                return f"{value:.3f}"
-            else:
-                return f"{value:.4f}"
+            try:
+                if value < 0.0001:
+                    return str(value)  # scientific notation
+                elif value > 1000:
+                    return f"{int(value):,d}"
+                elif value > 100:
+                    return f"{value:.1f}"
+                elif value > 10:
+                    return f"{value:.2f}"
+                elif value > 1:
+                    return f"{value:.3f}"
+                else:
+                    return f"{value:.4f}"
+            except:
+                return "nan"
 
         log.info(
             f"{prefix}\n"

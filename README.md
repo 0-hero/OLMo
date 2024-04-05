@@ -13,6 +13,15 @@ pip install flash-attn==2.3.3 --no-build-isolation
 
 ## Research log
 
+2024-04-04
+----------
+Baseline version trained for 10B tokens, I will use this number to compare quality of different modifications
+
+So, I implemented MoE for ff_out, but reduced d_model from 1536 to 768. Using 6 experts with top_k 2
+1. Total number of params is still 300M
+2. Using grouped-query attention as well with group size = 2
+3. Speed is lower, around 18k tps, and the inference speed will be higher though
+
 2024-04-03
 ----------
 

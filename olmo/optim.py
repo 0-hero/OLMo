@@ -9,7 +9,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed.fsdp import FullyShardedDataParallel
 from torch.optim.optimizer import Optimizer as OptimizerBase
-import msamp
+# import msamp
 
 from . import LayerNormBase
 from .config import OptimizerType, SchedulerConfig, SchedulerType, TrainConfig
@@ -19,7 +19,7 @@ __all__ = [
     "Optimizer",
     "LionW",
     "AdamW",
-    "FSDPAdamW",
+    "GaLoreAdamW",
     "Scheduler",
     "CosWithWarmup",
     "LinearWithWarmup",
@@ -31,6 +31,11 @@ __all__ = [
     "build_scheduler",
 ]
 
+try:
+    import bitsandbytes as bnb
+    import galore_torch
+except ImportError:
+    print("failed to import bnb and galore_torch")
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +46,7 @@ class Optimizer(OptimizerBase):
 
     @torch.no_grad()
     def clip_grads_and_collect_metrics(
-        self, global_step: int, collect_param_metrics: bool = True
+            self, global_step: int, collect_param_metrics: bool = True
     ) -> Dict[str, torch.Tensor]:
         """
         Clips gradients for every group that has the field `max_grad_norm`.
@@ -123,13 +128,13 @@ class Optimizer(OptimizerBase):
                     per_param_norm_metric_names.append(f"{prefix}.norm")
 
         assert (
-            len(per_param_min_metrics)
-            == len(per_param_min_metric_names)
-            == len(per_param_max_metrics)
-            == len(per_param_max_metric_names)
-            == len(per_param_sum_metrics)
-            == len(per_param_numel_metrics)
-            == len(per_param_avg_metric_names)
+                len(per_param_min_metrics)
+                == len(per_param_min_metric_names)
+                == len(per_param_max_metrics)
+                == len(per_param_max_metric_names)
+                == len(per_param_sum_metrics)
+                == len(per_param_numel_metrics)
+                == len(per_param_avg_metric_names)
         )
         assert len(per_param_norm_metrics) == len(per_param_norm_metric_names)
 
@@ -175,15 +180,15 @@ class Optimizer(OptimizerBase):
             per_param_norm_metrics = (all_norms ** (0.5)).squeeze(0).split(1)
         else:
             total_grad_norm = (
-                torch.cat(
-                    [
-                        m
-                        for m, n in zip(per_param_norm_metrics, per_param_norm_metric_names)
-                        if is_grad_norm_metric(n)
-                    ]
-                )
-                ** 2.0
-            ).sum() ** 0.5
+                                      torch.cat(
+                                          [
+                                              m
+                                              for m, n in zip(per_param_norm_metrics, per_param_norm_metric_names)
+                                              if is_grad_norm_metric(n)
+                                          ]
+                                      )
+                                      ** 2.0
+                              ).sum() ** 0.5
             per_param_avg_metrics = [x / n for x, n in zip(per_param_sum_metrics, per_param_numel_metrics)]
 
         assert len(per_param_avg_metrics) == len(per_param_avg_metric_names)
@@ -231,12 +236,12 @@ class Optimizer(OptimizerBase):
 
     @torch.no_grad()
     def _do_adaptive_clipping(
-        self,
-        group: Dict[str, Any],
-        max_norm_ratio: float,
-        global_step: int,
-        all_metrics: Dict[str, torch.Tensor],
-        collect_param_metrics: bool = True,
+            self,
+            group: Dict[str, Any],
+            max_norm_ratio: float,
+            global_step: int,
+            all_metrics: Dict[str, torch.Tensor],
+            collect_param_metrics: bool = True,
     ) -> Optional[int]:
         """
         Do adaptive gradient clipping on a param group.
@@ -298,11 +303,11 @@ class Optimizer(OptimizerBase):
 
     @torch.no_grad()
     def _do_global_fixed_clipping(
-        self,
-        group: Dict[str, Any],
-        max_norm: float,
-        all_metrics: Dict[str, torch.Tensor],
-        collect_param_metrics: bool = True,
+            self,
+            group: Dict[str, Any],
+            max_norm: float,
+            all_metrics: Dict[str, torch.Tensor],
+            collect_param_metrics: bool = True,
     ) -> Optional[int]:
         """
         Do global fixed gradient clipping on a param group.
@@ -342,11 +347,11 @@ class LionW(Optimizer):
     """
 
     def __init__(
-        self,
-        params,
-        lr: float = 1e-4,
-        betas: Tuple[float, float] = (0.9, 0.99),
-        weight_decay: float = 0.0,
+            self,
+            params,
+            lr: float = 1e-4,
+            betas: Tuple[float, float] = (0.9, 0.99),
+            weight_decay: float = 0.0,
     ):
         assert lr > 0.0
         assert all([0.0 <= beta <= 1.0 for beta in betas])
@@ -445,9 +450,18 @@ class AdamW(torch.optim.AdamW, Optimizer):
         return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
 
 
-class FSDPAdamW(msamp.optim.FSDPAdamW, Optimizer):
+class GaLoreAdamW(galore_torch.GaLoreAdamW, Optimizer):
     def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
         return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
+
+class AdamW8bit(bnb.optim.AdamW8bit, Optimizer):
+    def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
+        return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
+
+
+# class FSDPAdamW(msamp.optim.FSDPAdamW, Optimizer):
+#     def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
+#         return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
 
 
 @dataclass
@@ -462,27 +476,27 @@ class Scheduler(metaclass=ABCMeta):
         raise NotImplementedError
 
     def _get_max_grad_norm_coeff(
-        self, initial_value: Optional[float], step: int, max_steps: int
+            self, initial_value: Optional[float], step: int, max_steps: int
     ) -> Optional[float]:
         del max_steps  # might need this in the future, but for now I just wanted to match the API of `get_lr()`.
         if initial_value is None:
             return None
         elif (
-            self.grad_clip_warmup_steps is None
-            or self.grad_clip_warmup_factor is None
-            or step > self.grad_clip_warmup_steps
+                self.grad_clip_warmup_steps is None
+                or self.grad_clip_warmup_factor is None
+                or step > self.grad_clip_warmup_steps
         ):
             return initial_value
         else:
             return self.grad_clip_warmup_factor * initial_value
 
     def get_max_grad_norm(
-        self, initial_max_grad_norm: Optional[float], step: int, max_steps: int
+            self, initial_max_grad_norm: Optional[float], step: int, max_steps: int
     ) -> Optional[float]:
         return self._get_max_grad_norm_coeff(initial_max_grad_norm, step, max_steps)
 
     def get_max_grad_norm_ratio(
-        self, initial_max_grad_norm_ratio: Optional[float], step: int, max_steps: int
+            self, initial_max_grad_norm_ratio: Optional[float], step: int, max_steps: int
     ) -> Optional[float]:
         return self._get_max_grad_norm_coeff(initial_max_grad_norm_ratio, step, max_steps)
 
@@ -576,7 +590,7 @@ class BoltOnWarmupScheduler(Scheduler):
             return self.inner.get_lr(initial_lr, step, max_steps)
 
     def _get_max_grad_norm_coeff(
-        self, initial_value: Optional[float], step: int, max_steps: int
+            self, initial_value: Optional[float], step: int, max_steps: int
     ) -> Optional[float]:
         return self.inner._get_max_grad_norm_coeff(initial_value, step, max_steps)
 
@@ -617,12 +631,21 @@ def get_param_groups(cfg: TrainConfig, model: nn.Module) -> List[Dict[str, Any]]
             fpn = f"{mn}.{pn}" if mn else pn
             all_params[fpn] = p
 
+            try:
+                # handle ms-amp FP8Linear class to separate for fsdp
+                import msamp
+                if pn.endswith("weight") and isinstance(m, msamp.nn.FP8Linear):
+                    decay.add(fpn)
+                    continue
+            except ImportError:
+                pass
+
             if pn.endswith("bias"):
                 if cfg.optimizer.decay_norm_and_bias:
                     decay.add(fpn)
                 else:
                     no_decay.add(fpn)
-            elif pn.endswith("weight") and isinstance(m, nn.Linear):
+            elif (pn.endswith("weight") and isinstance(m, nn.Linear)) or "ff_out.output_linear" in pn or "ff_out.input_linear" in pn:
                 decay.add(fpn)
             elif pn.endswith("weight") and isinstance(m, (LayerNormBase, nn.LayerNorm)):
                 if cfg.optimizer.decay_norm_and_bias:
@@ -640,7 +663,7 @@ def get_param_groups(cfg: TrainConfig, model: nn.Module) -> List[Dict[str, Any]]
     union_params = decay | no_decay
     assert len(inter_params) == 0, f"parameters {inter_params} made it into both decay/no_decay sets!"
     assert (
-        len(all_params.keys() - union_params) == 0
+            len(all_params.keys() - union_params) == 0
     ), f"parameters {all_params.keys() - union_params} were not separated into either decay/no_decay set!"
 
     # Create the pytorch optimizer groups.
@@ -648,12 +671,15 @@ def get_param_groups(cfg: TrainConfig, model: nn.Module) -> List[Dict[str, Any]]
     no_decay_sorted = sorted(list(no_decay))
     param_groups = []
     if len(decay_sorted) > 0:
+        param_group = {
+            "params": [all_params[pn] for pn in decay_sorted],
+            "param_names": decay_sorted,
+            **param_group_defaults,
+        }
+        # if cfg.optimizer.name == OptimizerType.galore:
+        #     param_group.update({'rank': 128, 'update_proj_gap': 50, 'scale': 1.0, 'proj_type': "std"})
         param_groups.append(
-            {
-                "params": [all_params[pn] for pn in decay_sorted],
-                "param_names": decay_sorted,
-                **param_group_defaults,
-            }
+            param_group
         )
     if len(no_decay_sorted) > 0:
         param_groups.append(
@@ -722,8 +748,11 @@ def build_optimizer(cfg: TrainConfig, model: nn.Module) -> Optimizer:
             weight_decay=cfg.optimizer.weight_decay,
             eps=1e-5,
         )
-    elif cfg.optimizer.name == OptimizerType.fsdp_adamw:
-        optimizer = FSDPAdamW(param_groups, lr=cfg.optimizer.learning_rate,
+    elif cfg.optimizer.name == OptimizerType.galore:
+        print("building galore optimizer")
+        # make parameters with "rank" to a single group, if param_name has "mlp" or "attn"
+
+        optimizer = AdamW8bit(param_groups, lr=cfg.optimizer.learning_rate,
                               betas=cfg.optimizer.betas, weight_decay=cfg.optimizer.weight_decay, eps=1e-5)
         return optimizer
     else:

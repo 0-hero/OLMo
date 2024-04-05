@@ -45,6 +45,7 @@ from .config import (
 from .exceptions import OLMoConfigurationError
 from .initialization import ModuleType, init_weights
 from .torch_util import ensure_finite_
+from .moe import MoE
 
 if sys.version_info.minor > 8:
     from collections.abc import MutableMapping
@@ -74,7 +75,6 @@ __all__ = [
     "OLMoOutput",
     "OLMoGenerateOutput",
 ]
-
 
 log = logging.getLogger(__name__)
 
@@ -320,14 +320,15 @@ class FlashRotaryEmbedding(torch.nn.Module):
             k_ = k_.permute(1, 2, 0, 3)
             q_ = apply_rotary_emb(
                 q_,
-                pos_sin[0, 0, key_len - query_len : key_len, :],
-                pos_cos[0, 0, key_len - query_len : key_len, :],
+                pos_sin[0, 0, key_len - query_len: key_len, :],
+                pos_cos[0, 0, key_len - query_len: key_len, :],
                 inplace=True
             )
             k_ = apply_rotary_emb(k_, pos_sin[0, 0, :, :], pos_cos[0, 0, :, :], inplace=True)
             q_ = q_.permute(2, 0, 1, 3)
             k_ = k_.permute(2, 0, 1, 3)
         return q_.type_as(q), k_.type_as(k)
+
 
 class RotaryEmbedding(nn.Module):
     """
@@ -388,8 +389,8 @@ class RotaryEmbedding(nn.Module):
             pos_sin = pos_sin.type_as(q_)
             pos_cos = pos_cos.type_as(q_)
             q_ = self.apply_rotary_pos_emb(
-                pos_sin[:, :, key_len - query_len : key_len, :],
-                pos_cos[:, :, key_len - query_len : key_len, :],
+                pos_sin[:, :, key_len - query_len: key_len, :],
+                pos_cos[:, :, key_len - query_len: key_len, :],
                 q_,
             )
             k_ = self.apply_rotary_pos_emb(pos_sin, pos_cos, k_)
@@ -525,14 +526,20 @@ class OLMoBlock(nn.Module):
             config.d_model, config.d_model, bias=config.include_bias, device=config.init_device
         )
 
-        # Feed-forward output projection.
-        self.ff_out = nn.Linear(
-            int(self.act.output_multiplier * self.hidden_size),
-            config.d_model,
-            bias=config.include_bias,
-            device=config.init_device,
-        )
-        self.ff_out._is_residual = True  # type: ignore
+        if config.use_moe:
+            # we will set it in OLMoSequentialBlock
+            self.ff_out = None
+        else:
+            # Feed-forward output projection.
+            self.ff_out = nn.Linear(
+                # 8192
+                int(self.act.output_multiplier * self.hidden_size),
+                # 1024
+                config.d_model,
+                bias=config.include_bias,
+                device=config.init_device,
+            )
+            self.ff_out._is_residual = True  # type: ignore
 
         # Rotary embeddings.
         if self.config.rope:
@@ -670,7 +677,7 @@ class OLMoBlock(nn.Module):
             # as down-casting the attention bias to the autocast precision will result in -infs, which will
             # cause the SDP attn function to produce NaNs.
             attention_bias = self._cast_attn_bias(
-                attention_bias[:, :, key_len - query_len : key_len, :key_len], dtype
+                attention_bias[:, :, key_len - query_len: key_len, :key_len], dtype
             )
 
         # Get the attention scores.
@@ -732,10 +739,27 @@ class OLMoSequentialBlock(OLMoBlock):
         self.att_proj = nn.Linear(
             config.d_model, sum(self.fused_dims), bias=config.include_bias, device=config.init_device
         )
-        # Feed-forward input projection.
-        self.ff_proj = nn.Linear(
-            config.d_model, self.hidden_size, bias=config.include_bias, device=config.init_device
-        )
+
+        self.use_moe = config.use_moe
+
+        if self.use_moe:
+            # don't use upscale ff part, it's included in MoE class
+            self.ff_out = MoE(
+                # MLP d_model -> h -> d_model
+                input_size=config.d_model,
+                hidden_size=self.hidden_size,
+                num_experts=config.moe_num_experts,
+                top_k=config.moe_top_k,
+                bias=config.include_bias,
+                # activation=lambda x: self._activation_checkpoint_fn(self.act, x) if self._activation_checkpoint_fn is not None else self.act,
+                activation=self.act,
+                activation_output_multiplier=self.act.output_multiplier
+            )
+        else:
+            # Feed-forward input projection.
+            self.ff_proj = nn.Linear(
+                config.d_model, self.hidden_size, bias=config.include_bias, device=config.init_device
+            )
 
     def reset_parameters(self):
         super().reset_parameters()
@@ -745,9 +769,10 @@ class OLMoSequentialBlock(OLMoBlock):
         init_weights(
             self.config, self.att_proj, d=self.config.d_model, layer_id=None, type_of_module=ModuleType.in_module
         )
-        init_weights(
-            self.config, self.ff_proj, d=self.config.d_model, layer_id=None, type_of_module=ModuleType.in_module
-        )
+        if not self.use_moe:
+            init_weights(
+                self.config, self.ff_proj, d=self.config.d_model, layer_id=None, type_of_module=ModuleType.in_module
+            )
 
     def forward(
             self,
@@ -792,16 +817,24 @@ class OLMoSequentialBlock(OLMoBlock):
             x = self._activation_checkpoint_fn(self.ff_norm, x)  # type: ignore
         else:
             x = self.ff_norm(x)
-        x = self.ff_proj(x)
-        if self._activation_checkpoint_fn is not None:
-            x = self._activation_checkpoint_fn(self.act, x)  # type: ignore
+
+        if self.use_moe:
+            x, aux_loss = self.ff_out(x)
         else:
-            x = self.act(x)
-        x = self.ff_out(x)
+            x = self.ff_proj(x)
+            if self._activation_checkpoint_fn is not None:
+                x = self._activation_checkpoint_fn(self.act, x)  # type: ignore
+            else:
+                x = self.act(x)
+            x = self.ff_out(x)
+
         x = self.dropout(x)
         x = og_x + x
 
-        return x, cache
+        if self.use_moe:
+            return x, cache, aux_loss
+        else:
+            return x, cache
 
 
 class OLMoLlamaBlock(OLMoBlock):
@@ -944,6 +977,11 @@ class OLMoOutput(NamedTuple):
     Hidden states from each block.
     """
 
+    aux_loss: Optional[torch.Tensor]
+    """
+    Aux loss for MoE training
+    """
+
 
 class OLMoGenerateOutput(NamedTuple):
     token_ids: torch.LongTensor
@@ -1048,7 +1086,7 @@ class OLMo(nn.Module):
         blocks = [OLMoBlock.build(i, config, self.__cache) for i in range(config.n_layers)]
         if self.config.block_group_size > 1:
             block_groups = [
-                OLMoBlockGroup(config, i, blocks[i : i + config.block_group_size])
+                OLMoBlockGroup(config, i, blocks[i: i + config.block_group_size])
                 for i in range(0, config.n_layers, config.block_group_size)
             ]
             self.transformer.update({"block_groups": nn.ModuleList(block_groups)})
@@ -1067,7 +1105,7 @@ class OLMo(nn.Module):
                         config.embedding_size or config.vocab_size,
                         bias=config.include_bias,
                         device=config.init_device,
-                        )
+                    )
                 }
             )
         # When `init_device="meta"` FSDP will call `reset_parameters()` to initialize weights.
@@ -1248,6 +1286,7 @@ class OLMo(nn.Module):
                 ensure_finite_(attention_bias, check_neg_inf=True, check_pos_inf=False)
 
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
+        aux_loss = 0
 
         # decoder layers
         all_hidden_states = []
@@ -1267,7 +1306,12 @@ class OLMo(nn.Module):
                     )
                 else:
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache)
+                    if self.config.use_moe:
+                        x, cache, ff_out_aux_loss = block(x, attention_bias=attention_bias, layer_past=layer_past,
+                                                          use_cache=use_cache)
+                        aux_loss += ff_out_aux_loss
+                    else:
+                        x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache)
 
                 if attn_key_values is not None:
                     assert cache is not None
@@ -1282,7 +1326,7 @@ class OLMo(nn.Module):
                     None
                     if past_key_values is None
                     else past_key_values[
-                         group_idx * self.config.block_group_size : (group_idx + 1) * self.config.block_group_size
+                         group_idx * self.config.block_group_size: (group_idx + 1) * self.config.block_group_size
                          ]
                 )
                 x, cache = block_group(
@@ -1312,7 +1356,9 @@ class OLMo(nn.Module):
         if self.config.scale_logits:
             logits.mul_(1 / math.sqrt(self.config.d_model))
 
-        return OLMoOutput(logits=logits, attn_key_values=attn_key_values, hidden_states=tuple(all_hidden_states) if output_hidden_states else None)  # type: ignore[arg-type]
+        return OLMoOutput(logits=logits, attn_key_values=attn_key_values,
+                          hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
+                          aux_loss=aux_loss)  # type: ignore[arg-type]
 
     def get_fsdp_wrap_policy(self, wrap_strategy: Optional[FSDPWrapStrategy] = None):
         if wrap_strategy is None:
@@ -1433,7 +1479,7 @@ class OLMo(nn.Module):
         params_flops_per_seq = params_flops_per_token * self.config.max_sequence_length
         # there are 2 FLOPS per mac; there is A=Q*K^T and out=A*V ops (ie mult by 2)
         attn_flops_per_seq = (
-                self.config.n_layers * 2 * 2 * (self.config.d_model * (self.config.max_sequence_length**2))
+                self.config.n_layers * 2 * 2 * (self.config.d_model * (self.config.max_sequence_length ** 2))
         )
         self.__num_fwd_flops = params_flops_per_seq + attn_flops_per_seq
         return self.__num_fwd_flops
