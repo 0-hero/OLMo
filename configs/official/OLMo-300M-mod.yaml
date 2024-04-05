@@ -44,7 +44,7 @@ compile:
   fullgraph: false
 
 optimizer:
-  name: galore
+  name: adamw
   learning_rate: 5.0e-4
   weight_decay: 0.1
   betas:

@@ -4,9 +4,7 @@ import torch.nn as nn
 
 class MoD(nn.Module):
     """The Mixtures of Depth Block that dynamically which tokens to process in a block.
-    To use it with the GPT2 base model, just pass the flag --mixture_of_depth to the training script.
-
-    TODO: MLP that learns token dropping for autoregressive sampling
+    Wraps around decoder block to allow for token dropping.
     """
 
     def __init__(self, config, block):
