@@ -11,6 +11,14 @@ pip install -e .[all]
 pip install flash-attn==2.3.3 --no-build-isolation
 ```
 
+## Usage
+Main config is `configs/official/OLMo-300M-mod.yaml`. You can use it to train the model with the following command:
+```bash
+torchrun --nproc_per_node=2 scripts/train.py configs/official/OLMo-300M-mod.yaml
+```
+
+```bash
+
 ## Research log
 
 2024-04-05
