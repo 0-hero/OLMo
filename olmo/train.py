@@ -311,14 +311,14 @@ class Trainer:
             state_dict.get(  # for backwards compatibility
                 "global_train_examples_seen",
                 state_dict.get("global_data_step", self.global_step) * self.cfg.global_train_batch_size,
-            ),
+                ),
         )
         self.global_train_tokens_seen = state_dict.get(
             "global_train_tokens_seen",
             state_dict.get("global_data_step", self.global_step)  # for backwards compatibility
             * self.cfg.global_train_batch_size
             * self.cfg.model.max_sequence_length,
-        )
+            )
 
         if not self.cfg.restore_dataloader:
             self.epoch = 0
@@ -620,11 +620,12 @@ class Trainer:
 
         logits = outputs.logits
         aux_loss = getattr(outputs, "aux_loss")
-        try:
-            if aux_loss is not None and torch.isnan(aux_loss):
-                aux_loss = torch.tensor(0.0)
-        except:
-            aux_loss = torch.tensor(0.0)
+        # try:
+        #     if aux_loss is not None and torch.isnan(aux_loss):
+        #         aux_loss = torch.tensor(0.0)
+        # except:
+        #     aux_loss = torch.tensor(0.0)
+
         logits_for_loss = logits[..., :-1, :].contiguous()
         # shape: (batch_size * seq_len, vocab_size)
         logits_for_loss = logits_for_loss.view(-1, logits_for_loss.size(-1))
@@ -659,6 +660,7 @@ class Trainer:
                     micro_batch, compute_z_loss=self.cfg.softmax_auxiliary_loss
                 )
                 ce_loss = ce_loss / len(micro_batches)
+
                 if aux_loss is not None:
                     aux_loss = aux_loss / len(micro_batches)
                     aux_batch_loss += aux_loss.detach()
@@ -1064,7 +1066,7 @@ class Trainer:
                         # We start monitoring speed after the first batch since the first
                         # batch might be an outlier due to compiling and other initialization overhead.
                         record=not first_batch,
-                    )
+                        )
 
                     should_log_this_step = self.should_log_this_step()
 

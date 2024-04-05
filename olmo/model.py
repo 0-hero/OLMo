@@ -46,6 +46,7 @@ from .exceptions import OLMoConfigurationError
 from .initialization import ModuleType, init_weights
 from .torch_util import ensure_finite_
 from .moe import MoE
+from .mod import MoD
 
 if sys.version_info.minor > 8:
     from collections.abc import MutableMapping
@@ -1091,7 +1092,9 @@ class OLMo(nn.Module):
             ]
             self.transformer.update({"block_groups": nn.ModuleList(block_groups)})
         else:
-            self.transformer.update({"blocks": nn.ModuleList(blocks)})
+            self.transformer.update({"blocks": nn.ModuleList(
+                [MoD(config, block) if i % config.mod_every == 0 and config.use_mod else block for i, block in enumerate(blocks)]
+            )})
 
         if not (self.config.alibi or self.config.rope):
             self.transformer.update(
@@ -1105,7 +1108,7 @@ class OLMo(nn.Module):
                         config.embedding_size or config.vocab_size,
                         bias=config.include_bias,
                         device=config.init_device,
-                    )
+                        )
                 }
             )
         # When `init_device="meta"` FSDP will call `reset_parameters()` to initialize weights.
@@ -1310,6 +1313,14 @@ class OLMo(nn.Module):
                         x, cache, ff_out_aux_loss = block(x, attention_bias=attention_bias, layer_past=layer_past,
                                                           use_cache=use_cache)
                         aux_loss += ff_out_aux_loss
+                    elif self.config.use_mod:
+                        outputs = block(x, attention_bias=attention_bias, layer_past=layer_past,
+                                        use_cache=use_cache)
+                        if isinstance(block, MoD):
+                            x, cache, mlp_aux_loss = outputs
+                            aux_loss += mlp_aux_loss
+                        else:
+                            x, cache = outputs
                     else:
                         x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache)
 

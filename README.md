@@ -13,6 +13,14 @@ pip install flash-attn==2.3.3 --no-build-isolation
 
 ## Research log
 
+2024-04-05
+----------
+Approach with MoE didn't show good results, due to reduced d_model.
+
+I have implemented Mixture-of-Depths approach and use that with 12.5% sparsity and every 2 block. It allowed me to reduce memory costs and increase speed of training by 10%. 
+I have 35k tps now and even increased number of layers to 8.
+
+
 2024-04-04
 ----------
 Baseline version trained for 10B tokens, I will use this number to compare quality of different modifications

@@ -437,6 +437,10 @@ class ModelConfig(BaseConfig):
     moe_num_experts: Optional[int] = 6
     moe_top_k: Optional[int] = 2
 
+    use_mod: Optional[bool] = False
+    mod_capacity_factor: Optional[float] = 0.125
+    mod_every: Optional[int] = 2
+
     @property
     def effective_n_kv_heads(self) -> int:
         if self.n_kv_heads is None:
